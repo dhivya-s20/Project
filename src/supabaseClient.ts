@@ -14,5 +14,11 @@ if (parsedSupabaseUrl.pathname !== "/" || !["https:", "http:"].includes(parsedSu
 
 export const supabase = createClient(
   supabaseUrl,
-  supabaseAnonKey
+  supabaseAnonKey,
+  {
+    auth: {
+      flowType: "pkce",
+      detectSessionInUrl: true,
+    },
+  }
 );
