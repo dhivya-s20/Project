@@ -2,7 +2,7 @@ import { useState, type FormEvent } from "react";
 import { ArrowLeft, ArrowRight, Check, GraduationCap, KeyRound, LoaderCircle, LockKeyhole, Mail } from "lucide-react";
 import { supabase } from "../supabaseClient";
 import { getAppUrl } from "../lib/appUrl";
-import { readableAuthError } from "./AuthPage";
+import { readableAuthError } from "../lib/authErrors";
 
 type RecoveryMode = "request" | "reset";
 const passwordPattern = "(?=.*[A-Za-z])(?=.*[0-9])(?=.*[^A-Za-z0-9\\s]).{6,}";

@@ -12,6 +12,17 @@ import "./Auth.css";
 type AuthMode = "signin" | "signup";
 type AppPage = AuthMode | "forgot-password" | "reset-password" | "upload";
 
+function authRedirectNotice() {
+  const query = new URLSearchParams(window.location.search);
+  const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const errorCode = query.get("error_code") || fragment.get("error_code");
+  if (!errorCode) return "";
+  if (errorCode === "flow_state_already_used") {
+    return "This Google sign-in attempt has already been used. Start a new sign-in attempt.";
+  }
+  return "Google sign-in could not be completed. Please try again.";
+}
+
 function pageFromPath(pathname: string): AppPage {
   if (pathname === "/signup") return "signup";
   if (pathname === "/forgot-password") return "forgot-password";
@@ -24,7 +35,7 @@ export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
   const [page, setPage] = useState<AppPage>(() => pageFromPath(window.location.pathname));
-  const [authNotice, setAuthNotice] = useState("");
+  const [authNotice, setAuthNotice] = useState(authRedirectNotice);
   const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
   const [signOutBusy, setSignOutBusy] = useState(false);
   const [signOutError, setSignOutError] = useState("");
@@ -33,6 +44,7 @@ export default function App() {
   useEffect(() => {
     let mounted = true;
     let handledGoogleSignup = false;
+    if (authRedirectNotice()) window.history.replaceState({}, "", window.location.pathname);
     const setAuthSession = (nextSession: Session | null) => {
       if (!mounted) return;
       if (nextSession && rejectedGoogleUser.current === nextSession.user.id) return;
