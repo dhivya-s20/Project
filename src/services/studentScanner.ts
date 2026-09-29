@@ -62,7 +62,7 @@ function extractRegisterNumber(text: string) {
 }
 
 function extractDateOfBirth(text: string) {
-  return text.match(/\b(0?[1-9]|[12][0-9]|3[01])[\/\-.](0?[1-9]|1[0-2])[\/\-.](19|20)\d{2}\b/)?.[0]
+  return text.match(/\b(0?[1-9]|[12][0-9]|3[01])[/.-](0?[1-9]|1[0-2])[/.-](19|20)\d{2}\b/)?.[0]
     .replace(/[.-]/g, "/") ?? "";
 }
 
@@ -101,13 +101,14 @@ export async function saveStudent(student: ExtractedStudent) {
     throw new Error("We couldn’t read student details from this certificate. Try a sharper, well-lit image.");
   }
 
-  const studentData: Record<string, any> = {};
+  const studentData: Record<string, string> = {};
   if (student.studentName) studentData.student_name = student.studentName;
   if (student.registerNumber) {
     studentData.register_number = student.registerNumber;
     studentData.edutrio_student_id = `ET-${student.registerNumber}`;
   }
-  if (student.dateOfBirth) studentData.date_of_birth = toIsoDate(student.dateOfBirth);
+  const isoDate = student.dateOfBirth ? toIsoDate(student.dateOfBirth) : null;
+  if (isoDate) studentData.date_of_birth = isoDate;
 
   if (student.registerNumber) {
     const { data, error } = await supabase
