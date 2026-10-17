@@ -87,6 +87,7 @@ export default function App() {
     };
   }, []);
 
+
   const navigate = (next: AppPage) => {
     setPage(next);
     setAuthNotice("");

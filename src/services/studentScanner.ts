@@ -1,5 +1,6 @@
 import { createWorker } from "tesseract.js";
 import { supabase } from "../supabaseClient";
+import { UploadFlowError } from "./uploadErrors";
 
 export type ExtractedStudent = {
   studentName: string;
@@ -74,8 +75,20 @@ function toIsoDate(value: string) {
 }
 
 export async function extractStudentDetails(file: File): Promise<ExtractedStudent> {
-  const source = await preprocessImage(file);
-  const worker = await createWorker("eng");
+  let source: HTMLCanvasElement;
+  try {
+    source = await preprocessImage(file);
+  } catch (error) {
+    throw new UploadFlowError("image_decode", "Could not decode the selected image.", error);
+  }
+
+  let worker: Awaited<ReturnType<typeof createWorker>>;
+  try {
+    worker = await createWorker("eng");
+  } catch (error) {
+    throw new UploadFlowError("ocr_initialization", "Tesseract.js could not initialize its English worker.", error);
+  }
+
   const readRegion = async (canvas: HTMLCanvasElement) => {
     const { data } = await worker.recognize(canvas);
     return data.text.replace(/[\r\n]/g, " ").replace(/\s+/g, " ").trim();
@@ -91,8 +104,14 @@ export async function extractStudentDetails(file: File): Promise<ExtractedStuden
       dateOfBirth: extractDateOfBirth(dobText),
       registerNumber: extractRegisterNumber(registerText),
     };
+  } catch (error) {
+    throw new UploadFlowError("ocr_recognition", "Tesseract.js could not recognize text in the selected image.", error);
   } finally {
-    await worker.terminate();
+    try {
+      await worker.terminate();
+    } catch {
+      // Worker cleanup failure should not hide the OCR result or its real error.
+    }
   }
 }
 

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, BadgeCheck, Camera, Check, CircleAlert, CloudUpload, FileCheck2, FileImage, LoaderCircle, RefreshCw, ScanLine, ShieldCheck, Sparkles, Upload, X } from "lucide-react";
+import { DOCUMENT_CATEGORIES, saveCertificate, type DocumentCategory } from "../services/certificateRecords";
 import { extractStudentDetails, saveStudent } from "../services/studentScanner";
+import { UploadFlowError, safeUploadErrorDetails, uploadFailureMessage } from "../services/uploadErrors";
 import "../UploadPage.css";
 
 export default function UploadPage() {
@@ -12,6 +14,7 @@ export default function UploadPage() {
   const [busy, setBusy] = useState(false);
   const [success, setSuccess] = useState(false);
   const [status, setStatus] = useState("");
+  const [documentCategory, setDocumentCategory] = useState<DocumentCategory>(DOCUMENT_CATEGORIES[0][0]);
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -35,18 +38,23 @@ export default function UploadPage() {
 
   const setSelectedFile = (selected?: File) => {
     if (!selected) return;
-    if (!selected.type.startsWith("image/")) {
-      setStatus("Choose a JPG, PNG, or another image file.");
+    if (!(selected.type === "image/jpeg" || selected.type === "image/png" || selected.type === "image/webp")) {
+      setStatus("Choose a JPG, PNG, or WEBP image.");
       return;
     }
     if (selected.size > 10 * 1024 * 1024) {
       setStatus("This image is larger than 10 MB. Choose a smaller file.");
       return;
     }
-    setFile(selected);
-    setPreview(URL.createObjectURL(selected));
-    setStatus("");
-    setSuccess(false);
+    try {
+      const nextPreview = URL.createObjectURL(selected);
+      setFile(selected);
+      setPreview(nextPreview);
+      setStatus("");
+      setSuccess(false);
+    } catch {
+      setStatus("This image could not be prepared for preview. Try another JPG, PNG, or WEBP file.");
+    }
   };
 
   const openCamera = async () => {
@@ -97,11 +105,33 @@ export default function UploadPage() {
     setSuccess(false);
     try {
       const student = await extractStudentDetails(file);
-      await saveStudent(student);
+      if (documentCategory !== "aadhaar_cards" && documentCategory !== "community_certificates" && documentCategory !== "birth_certificates") {
+        if (!student.studentName && !student.registerNumber && !student.dateOfBirth) {
+          throw new UploadFlowError("ocr_recognition", "No student details could be recognized in the selected image.");
+        }
+        setStatus("Saving the extracted student details…");
+        try {
+          await saveStudent(student);
+        } catch (error) {
+          throw new UploadFlowError("student_record", "Could not save the extracted student details.", error);
+        }
+      }
+      setStatus("Uploading the certificate securely…");
+      await saveCertificate(file, student, documentCategory);
       setSuccess(true);
-      setStatus("Student record saved successfully.");
+      setStatus("Certificate saved securely.");
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "We couldn’t process this certificate. Try another image.");
+      if (import.meta.env.DEV) {
+        const stage = error instanceof UploadFlowError ? error.stage : "unknown";
+        console.error("[certificate-upload] Upload failed", {
+          stage,
+          ...safeUploadErrorDetails(error),
+          category: documentCategory,
+          imageType: file.type || "unknown",
+          imageSizeBytes: file.size,
+        });
+      }
+      setStatus(uploadFailureMessage(error));
     } finally {
       setBusy(false);
     }
@@ -126,6 +156,8 @@ export default function UploadPage() {
 
         <div className="upload-section-heading"><div><span className="upload-step">01</span><div><h2>{cameraOpen ? "Capture a certificate" : file ? "Review your document" : "Add a student certificate"}</h2><p>{cameraOpen ? "Keep the full page inside the frame." : file ? "Make sure all text is clear and easy to read." : "Choose a clear image of the certificate to get started."}</p></div></div><span className="upload-accepted"><ShieldCheck size={15}/> Private & secure</span></div>
 
+        <label className="document-category-field">Document type<select value={documentCategory} onChange={(event) => setDocumentCategory(event.target.value as DocumentCategory)}>{DOCUMENT_CATEGORIES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+
         {cameraOpen ? (
           <section className="camera-panel">
             <div className="camera-view">
@@ -147,7 +179,7 @@ export default function UploadPage() {
         ) : (
           <section className={`upload-workspace ${dragging ? "is-dragging" : ""}`} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={(event) => { event.preventDefault(); setDragging(false); setSelectedFile(event.dataTransfer.files[0]); }}>
             <div className="dropzone" role="button" tabIndex={0} onClick={() => fileInputRef.current?.click()} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); fileInputRef.current?.click(); } }}>
-              <input ref={fileInputRef} type="file" accept="image/*" onChange={(event) => setSelectedFile(event.target.files?.[0])}/>
+              <input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" onChange={(event) => setSelectedFile(event.target.files?.[0])}/>
               <span className="dropzone-icon"><CloudUpload size={25}/></span><h3>Drop your certificate here</h3><p>or browse files on your device</p><span className="browse-button"><Upload size={15}/> Choose an image</span><small>JPG, PNG, or WEBP · up to 10 MB</small>
               {status && <span className="upload-inline-error" role="alert">{status}</span>}
             </div>
