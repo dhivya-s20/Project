@@ -24,10 +24,31 @@ export function subjectNeedsReview(subject: SubjectMark) {
   return subject.needsReview || incompleteResult;
 }
 
-export function requiresAcademicReviewBeforeSave(student: ExtractedStudent) {
-  return !student.studentName.trim()
-    || student.studentNameConfidence < 80
-    || student.subjectMarks.length === 0;
+export function getAutomaticExtractionError(student: ExtractedStudent, isAcademic: boolean) {
+  if (!student.studentName.trim() || student.studentNameConfidence < 80) {
+    return "We couldn’t confidently read the student name. Please upload a clearer, well-lit image of the certificate.";
+  }
+  if (isAcademic) {
+    if (student.subjectMarks.length === 0) {
+      return "We couldn’t identify any subject rows. Please upload a clearer image showing the complete marks table.";
+    }
+    if (student.subjectMarks.some(subjectNeedsReview)) {
+      return "The subject marks could not be read reliably. Please upload a clearer image.";
+    }
+    const summary = calculateAcademicSummary(student.subjectMarks, student.officialTotalMarks);
+    if (summary.totalMarks === null || summary.maximumTotalMarks === null || summary.totalMismatch === true) {
+      return "The academic results could not be validated. Please upload a clearer image.";
+    }
+    if (student.officialPercentage !== null && summary.percentage !== null
+      && Math.abs(summary.percentage - student.officialPercentage) > 0.05) {
+      return "The academic results could not be validated. Please upload a clearer image.";
+    }
+    if (student.officialMaximumTotalMarks !== null
+      && Math.abs(summary.maximumTotalMarks - student.officialMaximumTotalMarks) > 0.01) {
+      return "The academic results could not be validated. Please upload a clearer image.";
+    }
+  }
+  return null;
 }
 
 export function confirmAcademicSaveResponse(

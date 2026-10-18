@@ -67,6 +67,7 @@ export async function saveCertificate(
   student: ExtractedStudent,
   category: DocumentCategory,
   mode: "insert" | "update" = "insert",
+  onProgress?: (stage: "storage" | "database") => void,
 ) {
   const extension = IMAGE_EXTENSIONS[file.type];
   if (!extension) throw new Error("Choose a JPG, PNG, or WEBP image to upload.");
@@ -103,6 +104,7 @@ export async function saveCertificate(
   }
 
   const filePath = `${user.id}/${category}/${id}.${extension}`;
+  onProgress?.("storage");
   const storage = supabase.storage.from("student-certificates");
   const objectExists = async () => {
     const directory = filePath.slice(0, filePath.lastIndexOf("/"));
@@ -149,6 +151,7 @@ export async function saveCertificate(
   }
 
   if (ACADEMIC_CATEGORIES.has(category)) {
+    onProgress?.("database");
     const rpcArguments = buildAcademicSaveArguments(category as AcademicCertificateCategory, record, student);
     const { data: savedId, error: rpcError } = await supabase.rpc(saveMode === "update" ? "update_academic_certificate" : "save_academic_certificate", {
       ...rpcArguments,
@@ -167,6 +170,7 @@ export async function saveCertificate(
     return { inserted: saveMode === "insert", updated: saveMode === "update", id };
   }
 
+  onProgress?.("database");
   const { data: insertedRecord, error: insertError } = await supabase
     .from(category)
     .insert(record)

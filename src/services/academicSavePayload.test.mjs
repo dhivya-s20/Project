@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildAcademicSaveArguments, confirmAcademicSaveResponse, requiresAcademicReviewBeforeSave } from "./academicSavePayload.ts";
+import { buildAcademicSaveArguments, confirmAcademicSaveResponse, getAutomaticExtractionError } from "./academicSavePayload.ts";
 
 const categories = [
   "diploma_certificates",
@@ -79,7 +79,7 @@ test("missing student names are not fabricated and are explicitly flagged for re
   assert.equal(payload.p_certificate.student_name, null);
   assert.equal(payload.p_certificate.needs_review, true);
   assert.ok(payload.p_certificate.review_fields.includes("student_name"));
-  assert.equal(requiresAcademicReviewBeforeSave(student({ studentName: "", studentNameConfidence: 0 })), true);
+  assert.match(getAutomaticExtractionError(student({ studentName: "", studentNameConfidence: 0 }), true), /student name/i);
 });
 
 test("empty OCR subject results are explicitly marked for review, not represented as invented rows", () => {
@@ -88,11 +88,25 @@ test("empty OCR subject results are explicitly marked for review, not represente
   assert.deepEqual(payload.p_subject_marks, []);
   assert.ok(payload.p_certificate.review_fields.includes("subject_marks"));
   assert.equal(payload.p_certificate.total_marks, null);
-  assert.equal(requiresAcademicReviewBeforeSave(student({ subjectMarks: [] })), true);
+  assert.match(getAutomaticExtractionError(student({ subjectMarks: [] }), true), /subject rows/i);
 });
 
 test("confident names with extracted subjects can use automatic saving", () => {
-  assert.equal(requiresAcademicReviewBeforeSave(student()), false);
+  assert.equal(getAutomaticExtractionError(student(), true), null);
+});
+
+test("automatic saving stops when an academic subject row needs review", () => {
+  assert.match(getAutomaticExtractionError(student({
+    subjectMarks: student().subjectMarks.map((subject, index) => index === 1 ? { ...subject, needsReview: true } : subject),
+  }), true), /subject marks could not be read reliably/i);
+});
+
+test("automatic saving stops when printed totals disagree with validated subject marks", () => {
+  assert.match(getAutomaticExtractionError(student({ officialTotalMarks: 177 }), true), /academic results could not be validated/i);
+});
+
+test("a nonacademic upload also stops when the essential student name is unreadable", () => {
+  assert.match(getAutomaticExtractionError(student({ studentName: "", studentNameConfidence: 0 }), false), /student name/i);
 });
 
 test("does not treat an RPC error or unexpected returned ID as a successful save", () => {
