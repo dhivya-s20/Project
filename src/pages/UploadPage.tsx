@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, BadgeCheck, Camera, Check, CircleAlert, CloudUpload, FileCheck2, FileImage, LoaderCircle, RefreshCw, ScanLine, ShieldCheck, Sparkles, Upload, X } from "lucide-react";
-import { DOCUMENT_CATEGORIES, saveCertificate, type DocumentCategory } from "../services/certificateRecords";
-import { extractStudentDetails } from "../services/studentScanner";
+import { ACADEMIC_CATEGORIES, DOCUMENT_CATEGORIES, saveCertificate, type DocumentCategory } from "../services/certificateRecords";
+import { calculateAcademicSummary, extractStudentDetails, type ExtractedStudent, type SubjectMark } from "../services/studentScanner";
 import { UploadFlowError, safeUploadErrorDetails, uploadFailureMessage } from "../services/uploadErrors";
 import "../UploadPage.css";
 
@@ -15,6 +15,7 @@ export default function UploadPage() {
   const [success, setSuccess] = useState(false);
   const [status, setStatus] = useState("");
   const [documentCategory, setDocumentCategory] = useState<DocumentCategory>(DOCUMENT_CATEGORIES[0][0]);
+  const [extraction, setExtraction] = useState<ExtractedStudent | null>(null);
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -107,8 +108,13 @@ export default function UploadPage() {
     setSuccess(false);
     try {
       const student = await extractStudentDetails(file);
-      if (!student.studentName && !student.registerNumber && !student.dateOfBirth) {
+      if (!student.studentName && !student.registerNumber && !student.dateOfBirth && !student.subjectMarks.length && !student.examYear && student.officialTotalMarks === null) {
         throw new UploadFlowError("ocr_recognition", "No student details could be recognized in the selected image.");
+      }
+      if (ACADEMIC_CATEGORIES.has(documentCategory)) {
+        setExtraction(student);
+        setStatus("Review the extracted student and subject marks before saving.");
+        return;
       }
       setStatus("Uploading the certificate securely…");
       const result = await saveCertificate(file, student, documentCategory);
@@ -132,9 +138,125 @@ export default function UploadPage() {
     }
   };
 
+  const saveReviewedCertificate = async () => {
+    if (!file || !extraction || submissionLock.current) return;
+    if (!extraction.subjectMarks.length) {
+      setStatus("Add the certificate’s subject rows before saving the academic record.");
+      return;
+    }
+    if (!extraction.studentName.trim()) {
+      setStatus("Enter the student’s name from the certificate before saving.");
+      return;
+    }
+    if (extraction.subjectMarks.some((subject) => !subject.subjectName.trim())) {
+      setStatus("Enter a subject name or remove the empty subject row before saving.");
+      return;
+    }
+    if (extraction.subjectMarks.some((subject) => subject.marksObtained !== null && subject.maximumMarks !== null && subject.marksObtained > subject.maximumMarks)) {
+      setStatus("A subject’s obtained marks exceed its maximum. Correct that row before saving.");
+      return;
+    }
+    if (extraction.subjectMarks.some((subject) => [subject.maximumMarks, subject.theoryMaximumMarks, subject.practicalMaximumMarks].some((maximum) => maximum !== null && maximum <= 0))) {
+      setStatus("Maximum marks must be greater than zero. Correct that subject row before saving.");
+      return;
+    }
+    if (extraction.officialPercentage !== null && (extraction.officialPercentage < 0 || extraction.officialPercentage > 100)) {
+      setStatus("The printed percentage must be between 0 and 100.");
+      return;
+    }
+    if (extraction.dateOfBirth && !isValidBirthDate(extraction.dateOfBirth)) {
+      setStatus("Enter the date of birth as a valid DD/MM/YYYY date.");
+      return;
+    }
+    submissionLock.current = true;
+    setBusy(true);
+    setSuccess(false);
+    setStatus("Uploading the certificate securely…");
+    try {
+      const result = await saveCertificate(file, extraction, documentCategory);
+      setSuccess(true);
+      setStatus(result.inserted ? "Record Saved Successfully" : "This certificate record was already saved.");
+    } catch (error) {
+      if (import.meta.env.DEV) {
+        const stage = error instanceof UploadFlowError ? error.stage : "unknown";
+        console.error("[certificate-upload] Upload failed", {
+          stage,
+          ...safeUploadErrorDetails(error),
+          category: documentCategory,
+          imageType: file.type || "unknown",
+          imageSizeBytes: file.size,
+        });
+      }
+      setStatus(uploadFailureMessage(error));
+    } finally {
+      submissionLock.current = false;
+      setBusy(false);
+    }
+  };
+
+  const updateStudentName = (value: string) => setExtraction((current) => current ? {
+    ...current,
+    studentName: value,
+    studentNameConfidence: value.trim() ? 100 : 0,
+    reviewFields: value.trim()
+      ? current.reviewFields.filter((field) => field !== "student_name")
+      : [...new Set([...current.reviewFields, "student_name"])],
+  } : current);
+
+  const updateAcademicFields = (changes: Partial<ExtractedStudent>) => setExtraction((current) => {
+    if (!current) return current;
+    const reviewFields = new Set(current.reviewFields);
+    if ("registerNumber" in changes && changes.registerNumber?.trim()) reviewFields.delete("register_number");
+    if ("dateOfBirth" in changes && changes.dateOfBirth?.trim()) reviewFields.delete("date_of_birth");
+    if ("examYear" in changes && changes.examYear !== null) reviewFields.delete("exam_year");
+    if ("officialTotalMarks" in changes) reviewFields.delete("official_total_comparison");
+    return { ...current, ...changes, reviewFields: [...reviewFields] };
+  });
+
+  const updateSubject = (index: number, changes: Partial<SubjectMark>) => setExtraction((current) => {
+    if (!current) return current;
+    const subjectMarks = current.subjectMarks.map((subject, rowIndex) => {
+      if (rowIndex !== index) return subject;
+      const updated = { ...subject, ...changes };
+      if (["theoryMarks", "theoryMaximumMarks", "practicalMarks", "practicalMaximumMarks"].some((field) => field in changes)) {
+        const components = [
+          { marks: updated.theoryMarks, maximum: updated.theoryMaximumMarks },
+          { marks: updated.practicalMarks, maximum: updated.practicalMaximumMarks },
+        ].filter((part) => part.marks !== null || part.maximum !== null);
+        if (components.length) {
+          updated.marksObtained = components.every((part) => part.marks !== null)
+            ? components.reduce((sum, part) => sum + (part.marks ?? 0), 0)
+            : null;
+          updated.maximumMarks = components.every((part) => part.maximum !== null)
+            ? components.reduce((sum, part) => sum + (part.maximum ?? 0), 0)
+            : null;
+          updated.resultStatus = "numeric";
+        }
+      }
+      return updated;
+    });
+    return { ...current, subjectMarks };
+  });
+
+  const addSubject = () => setExtraction((current) => current ? {
+    ...current,
+    subjectMarks: [...current.subjectMarks, {
+      subjectName: "", marksObtained: null, maximumMarks: null, theoryMarks: null,
+      theoryMaximumMarks: null, practicalMarks: null, practicalMaximumMarks: null,
+      resultStatus: "unreadable", gradeValue: "", rawMarks: "", isOptional: false,
+      confidence: 0, needsReview: true,
+    }],
+  } : current);
+
+  const removeSubject = (index: number) => setExtraction((current) => current ? {
+    ...current,
+    subjectMarks: current.subjectMarks.filter((_, rowIndex) => rowIndex !== index),
+  } : current);
+
   const removeFile = () => {
     setFile(null);
     setPreview("");
+    setExtraction(null);
     setStatus("");
     setSuccess(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -151,7 +273,7 @@ export default function UploadPage() {
 
         <div className="upload-section-heading"><div><span className="upload-step">01</span><div><h2>{cameraOpen ? "Capture a certificate" : file ? "Review your document" : "Add a student certificate"}</h2><p>{cameraOpen ? "Keep the full page inside the frame." : file ? "Make sure all text is clear and easy to read." : "Choose a clear image of the certificate to get started."}</p></div></div><span className="upload-accepted"><ShieldCheck size={15}/> Private & secure</span></div>
 
-        <label className="document-category-field">Document type<select value={documentCategory} onChange={(event) => setDocumentCategory(event.target.value as DocumentCategory)}>{DOCUMENT_CATEGORIES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <label className="document-category-field">Document type<select value={documentCategory} disabled={!!extraction || busy} onChange={(event) => { setDocumentCategory(event.target.value as DocumentCategory); setExtraction(null); }}>{DOCUMENT_CATEGORIES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
 
         {cameraOpen ? (
           <section className="camera-panel">
@@ -166,8 +288,9 @@ export default function UploadPage() {
             <div className="review-preview">{preview && <img src={preview} alt="Selected student certificate"/>}<span className="image-badge"><FileImage size={14}/> IMAGE PREVIEW</span></div>
             <div className="review-details"><div className="file-summary"><span className="file-icon"><FileCheck2 size={20}/></span><div><strong>{file.name}</strong><small>{(file.size / 1024 / 1024).toFixed(2)} MB · Ready to scan</small></div><button className="icon-action" aria-label="Remove image" onClick={removeFile}><X size={17}/></button></div>
               <div className="review-tip"><Sparkles size={16}/><span><strong>For best results</strong> Use a well-lit photo with all four edges visible.</span></div>
-              {status && <div className={`scan-status ${success ? "is-success" : busy ? "is-busy" : "is-error"}`} role={success ? "status" : "alert"}>{success ? <Check size={17}/> : busy ? <LoaderCircle className="spin-icon" size={17}/> : <CircleAlert size={17}/>}<span>{status}</span></div>}
-              <div className="review-actions"><button className="secondary-action" onClick={removeFile} disabled={busy}><ArrowLeft size={16}/> Choose another</button><button className="primary-action" onClick={() => void processCertificate()} disabled={busy || success}>{busy ? <><LoaderCircle className="spin-icon" size={17}/> Reading details…</> : success ? <><Check size={17}/> Record saved</> : <><ScanLine size={17}/> Read certificate<ArrowRight size={16}/></>}</button></div>
+              {extraction && ACADEMIC_CATEGORIES.has(documentCategory) && <AcademicReview extraction={extraction} onNameChange={updateStudentName} onFieldsChange={updateAcademicFields} onSubjectChange={updateSubject} onAddSubject={addSubject} onRemoveSubject={removeSubject} />}
+              {status && <div className={`scan-status ${success ? "is-success" : busy || extraction ? "is-busy" : "is-error"}`} role={success || extraction ? "status" : "alert"}>{success ? <Check size={17}/> : busy ? <LoaderCircle className="spin-icon" size={17}/> : <CircleAlert size={17}/>}<span>{status}</span></div>}
+              <div className="review-actions"><button className="secondary-action" onClick={removeFile} disabled={busy}><ArrowLeft size={16}/> Choose another</button><button className="primary-action" onClick={() => void (extraction && ACADEMIC_CATEGORIES.has(documentCategory) ? saveReviewedCertificate() : processCertificate())} disabled={busy || success}>{busy ? <><LoaderCircle className="spin-icon" size={17}/> {extraction ? "Saving record…" : "Reading details…"}</> : success ? <><Check size={17}/> Record saved</> : extraction && ACADEMIC_CATEGORIES.has(documentCategory) ? <><Check size={17}/> Save reviewed record</> : <><ScanLine size={17}/> Read certificate<ArrowRight size={16}/></>}</button></div>
               {success && <button className="scan-another" onClick={removeFile}>Scan another certificate</button>}
             </div>
           </section>
@@ -187,4 +310,89 @@ export default function UploadPage() {
       </div>
     </main>
   );
+}
+
+type AcademicReviewProps = {
+  extraction: ExtractedStudent;
+  onNameChange: (value: string) => void;
+  onFieldsChange: (changes: Partial<ExtractedStudent>) => void;
+  onSubjectChange: (index: number, changes: Partial<SubjectMark>) => void;
+  onAddSubject: () => void;
+  onRemoveSubject: (index: number) => void;
+};
+
+function numberValue(value: string): number | null {
+  if (!value.trim()) return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+function isValidBirthDate(value: string) {
+  const match = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!match) return false;
+  const day = Number(match[1]);
+  const month = Number(match[2]);
+  const year = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+function AcademicReview({ extraction, onNameChange, onFieldsChange, onSubjectChange, onAddSubject, onRemoveSubject }: AcademicReviewProps) {
+  const summary = calculateAcademicSummary(extraction.subjectMarks, extraction.officialTotalMarks);
+  const markInput = (label: string, value: number | null, onChange: (value: number | null) => void) => (
+    <label className="academic-mark-field">{label}<input type="number" min="0" step="0.01" value={value ?? ""} onChange={(event) => onChange(numberValue(event.target.value))}/></label>
+  );
+
+  return <section className="academic-review" aria-label="Review extracted academic details">
+    <div className="academic-review-heading"><div><strong>Review extracted details</strong><span>Check the OCR values and correct anything unclear before saving.</span></div><small>OCR confidence {Math.round(extraction.ocrConfidence)}%</small></div>
+    {(extraction.reviewFields.length > 0 || extraction.subjectMarks.some((subject) => subject.needsReview)) && <p className="academic-review-warning" role="status">Some values need your review. Unconfirmed fields will remain marked for review in the database.</p>}
+    <div className="academic-student-fields">
+      <label>Student name<input value={extraction.studentName} onChange={(event) => onNameChange(event.target.value)} placeholder="Review or enter the printed name"/></label>
+      <label>Register / roll number<input value={extraction.registerNumber} onChange={(event) => onFieldsChange({ registerNumber: event.target.value })} placeholder="Not read"/></label>
+      <label>Date of birth<input value={extraction.dateOfBirth} onChange={(event) => onFieldsChange({ dateOfBirth: event.target.value })} placeholder="DD/MM/YYYY"/></label>
+      <label>Examination year<input type="number" min="1900" max="2200" value={extraction.examYear ?? ""} onChange={(event) => onFieldsChange({ examYear: numberValue(event.target.value) })} placeholder="Not read"/></label>
+      <label>Exam session<input value={extraction.examSession} onChange={(event) => onFieldsChange({ examSession: event.target.value })} placeholder="Not read"/></label>
+      <label>Board name<input value={extraction.boardName} onChange={(event) => onFieldsChange({ boardName: event.target.value })} placeholder="Not read"/></label>
+      <label>School / institution<input value={extraction.institutionName} onChange={(event) => onFieldsChange({ institutionName: event.target.value })} placeholder="Not read"/></label>
+    </div>
+    <div className="academic-subject-heading"><strong>Subject-wise marks</strong><button type="button" className="secondary-action" onClick={onAddSubject}>Add subject</button></div>
+    {extraction.subjectMarks.length === 0 && <p className="academic-review-warning">No subject rows were confidently detected. Add rows from the certificate before saving.</p>}
+    <div className="academic-subject-list">
+      {extraction.subjectMarks.map((subject, index) => <article className="academic-subject-row" key={`${index}-${subject.subjectName}`}>
+        <div className="academic-subject-main">
+          <label>Subject<input value={subject.subjectName} onChange={(event) => onSubjectChange(index, { subjectName: event.target.value })} placeholder="Printed subject name"/></label>
+          {markInput("Marks obtained", subject.marksObtained, (value) => onSubjectChange(index, { marksObtained: value, resultStatus: value === null ? "unreadable" : "numeric" }))}
+          {markInput("Maximum marks", subject.maximumMarks, (value) => onSubjectChange(index, { maximumMarks: value }))}
+          <label className="academic-mark-field">Result type<select value={subject.resultStatus} onChange={(event) => { const resultStatus = event.target.value as SubjectMark["resultStatus"]; onSubjectChange(index, { resultStatus, marksObtained: resultStatus === "absent" ? 0 : resultStatus === "numeric" ? subject.marksObtained : null, gradeValue: resultStatus === "grade" ? subject.gradeValue : "" }); }}><option value="numeric">Numeric</option><option value="absent">Absent</option><option value="grade">Grade</option><option value="unreadable">Unreadable</option></select></label>
+          {subject.resultStatus === "grade" && <label className="academic-mark-field">Grade<input value={subject.gradeValue} onChange={(event) => onSubjectChange(index, { gradeValue: event.target.value })}/></label>}
+          <label className="academic-optional"><input type="checkbox" checked={subject.isOptional} onChange={(event) => onSubjectChange(index, { isOptional: event.target.checked })}/> Optional subject</label>
+        </div>
+        <div className="academic-subject-components">
+          <span>Theory and practical marks, when printed separately</span>
+          {markInput("Theory", subject.theoryMarks, (value) => onSubjectChange(index, { theoryMarks: value }))}
+          {markInput("Theory max", subject.theoryMaximumMarks, (value) => onSubjectChange(index, { theoryMaximumMarks: value }))}
+          {markInput("Practical", subject.practicalMarks, (value) => onSubjectChange(index, { practicalMarks: value }))}
+          {markInput("Practical max", subject.practicalMaximumMarks, (value) => onSubjectChange(index, { practicalMaximumMarks: value }))}
+        </div>
+        {subject.rawMarks && <small className="academic-ocr-fragment">OCR mark text for checking: {subject.rawMarks}</small>}
+        <div className="academic-subject-footer">
+          <label><input type="checkbox" checked={!subject.needsReview} onChange={(event) => onSubjectChange(index, { needsReview: !event.target.checked })}/> I reviewed this subject row</label>
+          <span>{subject.needsReview ? "Needs review" : `OCR confidence ${Math.round(subject.confidence)}%`}</span>
+          <button type="button" className="academic-remove-subject" onClick={() => onRemoveSubject(index)}>Remove</button>
+        </div>
+      </article>)}
+    </div>
+    <div className="academic-total-fields">
+      <label>Printed total obtained<input type="number" min="0" step="0.01" value={extraction.officialTotalMarks ?? ""} onChange={(event) => onFieldsChange({ officialTotalMarks: numberValue(event.target.value) })}/></label>
+      <label>Printed maximum total<input type="number" min="0" step="0.01" value={extraction.officialMaximumTotalMarks ?? ""} onChange={(event) => onFieldsChange({ officialMaximumTotalMarks: numberValue(event.target.value) })}/></label>
+      <label>Printed percentage<input type="number" min="0" max="100" step="0.01" value={extraction.officialPercentage ?? ""} onChange={(event) => onFieldsChange({ officialPercentage: numberValue(event.target.value) })}/></label>
+    </div>
+    <div className="academic-calculated-summary">
+      <strong>Calculated from reviewed subject rows</strong>
+      <span>Total: {summary.totalMarks ?? "Needs review"}{summary.maximumTotalMarks !== null ? ` / ${summary.maximumTotalMarks}` : ""}</span>
+      <span>Percentage: {summary.percentage === null ? "Needs complete numeric marks and maximums" : `${summary.percentage}%`}</span>
+      {summary.totalMismatch && <span className="academic-mismatch">The printed total differs from the calculated total. The difference will be flagged for review.</span>}
+      {extraction.officialPercentage !== null && summary.percentage !== null && Math.abs(extraction.officialPercentage - summary.percentage) > 0.05 && <span className="academic-mismatch">The printed percentage differs from the calculated percentage.</span>}
+    </div>
+  </section>;
 }
