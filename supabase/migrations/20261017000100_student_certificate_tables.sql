@@ -18,8 +18,8 @@ insert into public.document_types (document_type, display_name) values
   ('aadhaar_cards', 'Aadhaar card'),
   ('community_certificates', 'Community certificate'),
   ('birth_certificates', 'Birth certificate'),
-  ('tc_10th_certificates', '10th Transfer Certificate'),
-  ('tc_12th_certificates', '12th Transfer Certificate')
+  ('10th_tc_certificates', '10th Transfer Certificate'),
+  ('12th_tc_certificates', '12th Transfer Certificate')
 on conflict (document_type) do update set display_name = excluded.display_name;
 
 create table if not exists public.diploma_certificates (
@@ -103,18 +103,18 @@ create table if not exists public.birth_certificates (
   verification_status text not null default 'pending' check (verification_status in ('pending','verified','rejected')),
   created_at timestamptz not null default now(), updated_at timestamptz not null default now()
 );
-create table if not exists public.tc_10th_certificates (
+create table if not exists public."10th_tc_certificates" (
   id uuid primary key default gen_random_uuid(), owner_id uuid not null references auth.users(id) on delete cascade,
   student_name text, register_number text, date_of_birth date,
-  document_type text not null default 'tc_10th_certificates' check (document_type = 'tc_10th_certificates'),
+  document_type text not null default '10th_tc_certificates' check (document_type = '10th_tc_certificates'),
   file_url text not null, file_name text not null,
   verification_status text not null default 'pending' check (verification_status in ('pending','verified','rejected')),
   created_at timestamptz not null default now(), updated_at timestamptz not null default now()
 );
-create table if not exists public.tc_12th_certificates (
+create table if not exists public."12th_tc_certificates" (
   id uuid primary key default gen_random_uuid(), owner_id uuid not null references auth.users(id) on delete cascade,
   student_name text, register_number text, date_of_birth date,
-  document_type text not null default 'tc_12th_certificates' check (document_type = 'tc_12th_certificates'),
+  document_type text not null default '12th_tc_certificates' check (document_type = '12th_tc_certificates'),
   file_url text not null, file_name text not null,
   verification_status text not null default 'pending' check (verification_status in ('pending','verified','rejected')),
   created_at timestamptz not null default now(), updated_at timestamptz not null default now()
@@ -137,10 +137,10 @@ create index if not exists "12th_cbse_certificates_register_idx" on public."12th
 create index if not exists aadhaar_cards_owner_created_idx on public.aadhaar_cards (owner_id, created_at desc);
 create index if not exists community_certificates_owner_created_idx on public.community_certificates (owner_id, created_at desc);
 create index if not exists birth_certificates_owner_created_idx on public.birth_certificates (owner_id, created_at desc);
-create index if not exists tc_10th_certificates_owner_created_idx on public.tc_10th_certificates (owner_id, created_at desc);
-create index if not exists tc_10th_certificates_register_idx on public.tc_10th_certificates (register_number) where register_number is not null;
-create index if not exists tc_12th_certificates_owner_created_idx on public.tc_12th_certificates (owner_id, created_at desc);
-create index if not exists tc_12th_certificates_register_idx on public.tc_12th_certificates (register_number) where register_number is not null;
+create index if not exists "10th_tc_certificates_owner_created_idx" on public."10th_tc_certificates" (owner_id, created_at desc);
+create index if not exists "10th_tc_certificates_register_idx" on public."10th_tc_certificates" (register_number) where register_number is not null;
+create index if not exists "12th_tc_certificates_owner_created_idx" on public."12th_tc_certificates" (owner_id, created_at desc);
+create index if not exists "12th_tc_certificates_register_idx" on public."12th_tc_certificates" (register_number) where register_number is not null;
 
 -- No admin/role model exists in the current app. Authenticated users can only
 -- insert and read their own submissions; verification status remains immutable
@@ -153,7 +153,7 @@ begin
     'diploma_certificates', '10th_state_board_certificates', '10th_cbse_certificates',
     '11th_state_board_certificates', '11th_cbse_certificates',
     '12th_state_board_certificates', '12th_cbse_certificates', 'aadhaar_cards',
-    'community_certificates', 'birth_certificates', 'tc_10th_certificates', 'tc_12th_certificates'
+    'community_certificates', 'birth_certificates', '10th_tc_certificates', '12th_tc_certificates'
   ] loop
     execute format('alter table public.%I enable row level security', table_name);
     execute format('revoke all on public.%I from public, anon, authenticated', table_name);

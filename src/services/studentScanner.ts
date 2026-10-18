@@ -1,5 +1,4 @@
 import { createWorker } from "tesseract.js";
-import { supabase } from "../supabaseClient";
 import { UploadFlowError } from "./uploadErrors";
 
 export type ExtractedStudent = {
@@ -67,13 +66,6 @@ function extractDateOfBirth(text: string) {
     .replace(/[.-]/g, "/") ?? "";
 }
 
-function toIsoDate(value: string) {
-  const parts = value.split("/");
-  if (parts.length !== 3) return null;
-  const [day, month, year] = parts;
-  return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
-}
-
 export async function extractStudentDetails(file: File): Promise<ExtractedStudent> {
   let source: HTMLCanvasElement;
   try {
@@ -113,39 +105,4 @@ export async function extractStudentDetails(file: File): Promise<ExtractedStuden
       // Worker cleanup failure should not hide the OCR result or its real error.
     }
   }
-}
-
-export async function saveStudent(student: ExtractedStudent) {
-  if (!student.studentName && !student.registerNumber && !student.dateOfBirth) {
-    throw new Error("We couldn’t read student details from this certificate. Try a sharper, well-lit image.");
-  }
-
-  const studentData: Record<string, string> = {};
-  if (student.studentName) studentData.student_name = student.studentName;
-  if (student.registerNumber) {
-    studentData.register_number = student.registerNumber;
-    studentData.edutrio_student_id = `ET-${student.registerNumber}`;
-  }
-  const isoDate = student.dateOfBirth ? toIsoDate(student.dateOfBirth) : null;
-  if (isoDate) studentData.date_of_birth = isoDate;
-
-  if (student.registerNumber) {
-    const { data, error } = await supabase
-      .from("01_student_information")
-      .select("id")
-      .eq("register_number", student.registerNumber)
-      .maybeSingle();
-    if (error) throw error;
-    if (data?.id) {
-      const { error: updateError } = await supabase
-        .from("01_student_information")
-        .update(studentData)
-        .eq("id", data.id);
-      if (updateError) throw updateError;
-      return;
-    }
-  }
-
-  const { error } = await supabase.from("01_student_information").insert(studentData);
-  if (error) throw error;
 }

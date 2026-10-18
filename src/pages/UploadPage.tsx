@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, BadgeCheck, Camera, Check, CircleAlert, CloudUpload, FileCheck2, FileImage, LoaderCircle, RefreshCw, ScanLine, ShieldCheck, Sparkles, Upload, X } from "lucide-react";
 import { DOCUMENT_CATEGORIES, saveCertificate, type DocumentCategory } from "../services/certificateRecords";
-import { extractStudentDetails, saveStudent } from "../services/studentScanner";
+import { extractStudentDetails } from "../services/studentScanner";
 import { UploadFlowError, safeUploadErrorDetails, uploadFailureMessage } from "../services/uploadErrors";
 import "../UploadPage.css";
 
@@ -19,6 +19,7 @@ export default function UploadPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const submissionLock = useRef(false);
 
   useEffect(() => {
     if (preview) return () => URL.revokeObjectURL(preview);
@@ -99,27 +100,20 @@ export default function UploadPage() {
   };
 
   const processCertificate = async () => {
-    if (!file) return;
+    if (!file || submissionLock.current) return;
+    submissionLock.current = true;
     setBusy(true);
     setStatus("Reading the certificate and preparing the student record…");
     setSuccess(false);
     try {
       const student = await extractStudentDetails(file);
-      if (documentCategory !== "aadhaar_cards" && documentCategory !== "community_certificates" && documentCategory !== "birth_certificates") {
-        if (!student.studentName && !student.registerNumber && !student.dateOfBirth) {
-          throw new UploadFlowError("ocr_recognition", "No student details could be recognized in the selected image.");
-        }
-        setStatus("Saving the extracted student details…");
-        try {
-          await saveStudent(student);
-        } catch (error) {
-          throw new UploadFlowError("student_record", "Could not save the extracted student details.", error);
-        }
+      if (!student.studentName && !student.registerNumber && !student.dateOfBirth) {
+        throw new UploadFlowError("ocr_recognition", "No student details could be recognized in the selected image.");
       }
       setStatus("Uploading the certificate securely…");
-      await saveCertificate(file, student, documentCategory);
+      const result = await saveCertificate(file, student, documentCategory);
       setSuccess(true);
-      setStatus("Certificate saved securely.");
+      setStatus(result.inserted ? "Record Saved Successfully" : "This certificate record was already saved.");
     } catch (error) {
       if (import.meta.env.DEV) {
         const stage = error instanceof UploadFlowError ? error.stage : "unknown";
@@ -133,6 +127,7 @@ export default function UploadPage() {
       }
       setStatus(uploadFailureMessage(error));
     } finally {
+      submissionLock.current = false;
       setBusy(false);
     }
   };
