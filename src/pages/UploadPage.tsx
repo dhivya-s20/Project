@@ -1,13 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowRight, BadgeCheck, Camera, Check, CircleAlert, CloudUpload, LoaderCircle, RefreshCw, ScanLine, ShieldCheck, Sparkles, Upload, X } from "lucide-react";
 import { ACADEMIC_CATEGORIES, DOCUMENT_CATEGORIES, saveCertificate, type DocumentCategory } from "../services/certificateRecords";
-import { extractStudentDetails, type ExtractedStudent } from "../services/studentScanner";
+import { calculateAcademicSummary, extractStudentDetails, type ExtractedStudent } from "../services/studentScanner";
 import { UploadFlowError, safeUploadErrorDetails } from "../services/uploadErrors";
 import { getAutomaticExtractionError } from "../services/academicSavePayload";
+import { canConfirmCertificatePreview, createSubmissionGuard, getSupportedCertificateMimeType } from "../services/certificatePreview";
 import "../UploadPage.css";
 
 export default function UploadPage() {
   const [file, setFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState("");
+  const [previewReady, setPreviewReady] = useState(false);
+  const [previewFailed, setPreviewFailed] = useState(false);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
   const [cameraError, setCameraError] = useState("");
@@ -21,7 +25,8 @@ export default function UploadPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const submissionLock = useRef(false);
+  const previewUrlRef = useRef<string | null>(null);
+  const submissionGuard = useRef(createSubmissionGuard());
 
   useEffect(() => {
     const video = videoRef.current;
@@ -33,11 +38,11 @@ export default function UploadPage() {
 
   useEffect(() => () => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
+    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
   }, []);
 
   async function processCertificate(selectedFile: File, selectedCategory: DocumentCategory) {
-    if (submissionLock.current) return;
-    submissionLock.current = true;
+    if (!submissionGuard.current.acquire()) return;
     setBusy(true);
     setStatus("Processing certificate...");
     setSuccess(false);
@@ -48,17 +53,33 @@ export default function UploadPage() {
       setExtraction(student);
       const extractionError = getAutomaticExtractionError(student, isAcademic);
       if (extractionError) {
+        if (import.meta.env.DEV) {
+          const summary = isAcademic ? calculateAcademicSummary(student.subjectMarks, student.officialTotalMarks) : null;
+          console.warn("[certificate-upload] OCR validation stopped before saving", {
+            category: selectedCategory,
+            studentNameConfident: student.studentName.trim().length > 0 && student.studentNameConfidence >= 80,
+            subjectRowCount: student.subjectMarks.length,
+            uncertainSubjectRowCount: student.subjectMarks.filter((subject) => subject.needsReview).length,
+            totalCalculated: summary?.totalMarks !== null && summary?.totalMarks !== undefined,
+            maximumCalculated: summary?.maximumTotalMarks !== null && summary?.maximumTotalMarks !== undefined,
+            printedTotalMismatch: summary?.totalMismatch === true,
+            printedPercentageMismatch: summary !== null && student.officialPercentage !== null && summary.percentage !== null
+              ? Math.abs(summary.percentage - student.officialPercentage) > 0.05
+              : false,
+            printedMaximumMismatch: summary !== null && student.officialMaximumTotalMarks !== null && summary.maximumTotalMarks !== null
+              ? Math.abs(summary.maximumTotalMarks - student.officialMaximumTotalMarks) > 0.01
+              : false,
+          });
+        }
         setRetryAvailable(true);
         setStatus("Unable to process certificate. Please upload a clearer image.");
         return;
       }
-      const result = await saveCertificate(selectedFile, student, selectedCategory, "insert", (stage) => {
+      await saveCertificate(selectedFile, student, selectedCategory, "insert", (stage) => {
         setStatus(stage === "storage" ? "Processing certificate..." : "Saving certificate...");
       });
       setSuccess(true);
-      setStatus(result.inserted || result.updated
-        ? "Certificate saved successfully."
-        : "Certificate saved successfully.");
+      setStatus("Record saved successfully!");
     } catch (error) {
       if (import.meta.env.DEV) {
         const stage = error instanceof UploadFlowError ? error.stage : "unknown";
@@ -76,14 +97,15 @@ export default function UploadPage() {
         ? "Unable to process certificate. Please upload a clearer image."
         : "Unable to save certificate. Please try again.");
     } finally {
-      submissionLock.current = false;
+      submissionGuard.current.release();
       setBusy(false);
     }
   }
 
   const setSelectedFile = (selected?: File) => {
-    if (!selected || submissionLock.current) return;
-    if (!(selected.type === "image/jpeg" || selected.type === "image/png" || selected.type === "image/webp")) {
+    if (!selected || busy) return;
+    const normalizedMimeType = getSupportedCertificateMimeType(selected);
+    if (!normalizedMimeType) {
       setStatus("Choose a JPG, PNG, or WEBP image.");
       return;
     }
@@ -91,12 +113,31 @@ export default function UploadPage() {
       setStatus("This image is larger than 10 MB. Choose a smaller file.");
       return;
     }
-    setFile(selected);
+    const imageFile = selected.type === normalizedMimeType
+      ? selected
+      : new File([selected], selected.name, { type: normalizedMimeType, lastModified: selected.lastModified });
+    let nextPreviewUrl: string;
+    try {
+      nextPreviewUrl = URL.createObjectURL(imageFile);
+    } catch {
+      setStatus("Unable to display this certificate. Please choose another image.");
+      return;
+    }
+    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+    previewUrlRef.current = nextPreviewUrl;
+    setPreviewUrl(nextPreviewUrl);
+    setPreviewReady(false);
+    setPreviewFailed(false);
+    setFile(imageFile);
     setExtraction(null);
     setStatus("");
     setSuccess(false);
     setRetryAvailable(false);
-    void processCertificate(selected, documentCategory);
+  };
+
+  const confirmCertificate = () => {
+    if (!file || !canConfirmCertificatePreview(!!file, previewReady, previewFailed, busy)) return;
+    void processCertificate(file, documentCategory);
   };
 
   const openCamera = async () => {
@@ -141,6 +182,11 @@ export default function UploadPage() {
   };
 
   const removeFile = () => {
+    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+    previewUrlRef.current = null;
+    setPreviewUrl("");
+    setPreviewReady(false);
+    setPreviewFailed(false);
     setFile(null);
     setExtraction(null);
     setStatus("");
@@ -158,9 +204,9 @@ export default function UploadPage() {
           <div className="hero-art" aria-hidden="true"><div className="hero-orbit hero-orbit-a"/><div className="hero-orbit hero-orbit-b"/><div className="hero-document"><div className="hero-doc-logo"><BadgeCheck size={20}/></div><i/><i/><i/><div className="hero-doc-stamp"><Check size={18}/></div></div><div className="hero-spark hero-spark-a">✳</div><div className="hero-spark hero-spark-b">✦</div></div>
         </section>
 
-        <div className="upload-section-heading"><div><span className="upload-step">01</span><div><h2>{cameraOpen ? "Capture a certificate" : file ? "Processing certificate" : "Add a student certificate"}</h2><p>{cameraOpen ? "Keep the full page inside the frame." : file ? "OCR and secure saving run automatically." : "Choose a clear image of the certificate to get started."}</p></div></div><span className="upload-accepted"><ShieldCheck size={15}/> Private & secure</span></div>
+        <div className="upload-section-heading"><div><span className="upload-step">01</span><div><h2>{cameraOpen ? "Capture a certificate" : file ? busy ? "Processing certificate" : "Confirm certificate" : "Add a student certificate"}</h2><p>{cameraOpen ? "Keep the full page inside the frame." : file ? busy ? "OCR and secure saving are in progress." : "Check the image preview, then select OK to continue." : "Choose a clear image of the certificate to get started."}</p></div></div><span className="upload-accepted"><ShieldCheck size={15}/> Private & secure</span></div>
 
-        <label className="document-category-field">Document type<select value={documentCategory} disabled={!!extraction || busy} onChange={(event) => { const category = event.target.value as DocumentCategory; setDocumentCategory(category); setExtraction(null); if (file) void processCertificate(file, category); }}>{DOCUMENT_CATEGORIES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <label className="document-category-field">Document type<select value={documentCategory} disabled={!!extraction || busy} onChange={(event) => { const category = event.target.value as DocumentCategory; setDocumentCategory(category); setExtraction(null); }}>{DOCUMENT_CATEGORIES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
 
         {cameraOpen ? (
           <section className="camera-panel">
@@ -172,6 +218,11 @@ export default function UploadPage() {
           </section>
         ) : file ? (
           <section className="document-review">
+            <div className="review-preview">
+              {previewUrl && !previewFailed && <img src={previewUrl} alt="Selected certificate preview" onLoad={() => setPreviewReady(true)} onError={() => { setPreviewReady(false); setPreviewFailed(true); setRetryAvailable(false); setStatus("Unable to display this certificate. Please choose another image."); }}/>}
+              {previewFailed && <p className="preview-error" role="alert">Unable to display this certificate. Please choose another image.</p>}
+              {previewReady && !previewFailed && !busy && !success && !retryAvailable && <button className="primary-action preview-confirm" onClick={confirmCertificate}>OK</button>}
+            </div>
             <div className="review-details">
               {status && <div className={`scan-status ${success ? "is-success" : busy ? "is-busy" : "is-error"}`} role={success || busy ? "status" : "alert"}>{success ? <Check size={17}/> : busy ? <LoaderCircle className="spin-icon" size={17}/> : <CircleAlert size={17}/>}<span>{status}</span></div>}
               <div className="review-actions"><button className="secondary-action" onClick={removeFile} disabled={busy}>Choose another</button>{busy ? <button className="primary-action" disabled><LoaderCircle className="spin-icon" size={17}/> Processing…</button> : success ? <button className="primary-action" disabled><Check size={17}/> Saved</button> : retryAvailable ? <button className="primary-action" onClick={() => void processCertificate(file, documentCategory)}><RefreshCw size={16}/> Retry</button> : null}</div>
@@ -181,7 +232,7 @@ export default function UploadPage() {
         ) : (
           <section className={`upload-workspace ${dragging ? "is-dragging" : ""}`} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={(event) => { event.preventDefault(); setDragging(false); setSelectedFile(event.dataTransfer.files[0]); }}>
             <div className="dropzone" role="button" tabIndex={0} onClick={() => fileInputRef.current?.click()} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); fileInputRef.current?.click(); } }}>
-              <input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" onChange={(event) => setSelectedFile(event.target.files?.[0])}/>
+              <input ref={fileInputRef} type="file" accept="image/jpeg,image/jpg,image/png,image/webp,.jpg,.jpeg,.png,.webp" onChange={(event) => setSelectedFile(event.target.files?.[0])}/>
               <span className="dropzone-icon"><CloudUpload size={25}/></span><h3>Drop your certificate here</h3><p>or browse files on your device</p><span className="browse-button"><Upload size={15}/> Choose an image</span><small>JPG, PNG, or WEBP · up to 10 MB</small>
               {status && <span className="upload-inline-error" role="alert">{status}</span>}
             </div>

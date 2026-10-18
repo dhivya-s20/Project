@@ -143,6 +143,7 @@ function subjectNameFromLine(line: string) {
     .replace(/\s+(?:(?:\d{1,4}(?:\.\d{1,2})?|ABSENT|AB|PASS|FAIL|O|A1|A2|B1|B2|C1|C2|[A-F][+-]?)(?:\s*[/|]\s*|\s+)?)+$/i, "");
   name = cleanText(name
     .replace(/[:|•▪]+/g, " ")
+    .replace(/\boptional\b/gi, " ")
     .replace(/\b(?:theory|practical)\b/gi, " ")
     .replace(/\b(?:marks?\s*(?:obtained|secured)|obtained|secured|maximum|max\.?)\b[:=-]?/gi, " "));
   return name.replace(/[\s:;,.-]+$/g, "");
@@ -245,7 +246,6 @@ export function parseSubjectRows(lines: Array<{ text: string; confidence: number
     }
     if (lowerLine.includes("optional")) {
       row.isOptional = true;
-      row.needsReview = true;
     }
     const existing = rows.find((item) => item.subjectName.toLocaleLowerCase() === row.subjectName.toLocaleLowerCase());
     if (!existing) {
@@ -269,6 +269,14 @@ export function parseSubjectRows(lines: Array<{ text: string; confidence: number
     if (row.theoryMaximumMarks !== null && row.practicalMaximumMarks !== null) {
       row.maximumMarks = row.theoryMaximumMarks + row.practicalMaximumMarks;
     }
+    const hasCompleteComponents = row.theoryMarks !== null
+      && row.practicalMarks !== null
+      && row.theoryMaximumMarks !== null
+      && row.practicalMaximumMarks !== null
+      && row.theoryMarks <= row.theoryMaximumMarks
+      && row.practicalMarks <= row.practicalMaximumMarks
+      && row.confidence >= 80;
+    if (hasCompleteComponents) row.needsReview = false;
     return row;
   });
 }

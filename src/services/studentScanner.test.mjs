@@ -57,4 +57,18 @@ test("combines printed theory and practical components once and preserves the co
   assert.equal(subjects[0].practicalMarks, 18);
   assert.equal(subjects[0].marksObtained, 88);
   assert.equal(subjects[0].maximumMarks, 100);
+  assert.equal(subjects[0].needsReview, false);
+});
+
+test("does not flag a clearly parsed optional subject solely because it is optional", () => {
+  const [subject] = parseSubjectRows([
+    { text: "Subject Maximum Marks Marks Obtained", confidence: 98 },
+    { text: "1 Computer Science Optional 100 82", confidence: 95 },
+  ], 96);
+
+  assert.equal(subject.subjectName, "Computer Science");
+  assert.equal(subject.isOptional, true);
+  assert.equal(subject.marksObtained, 82);
+  assert.equal(subject.maximumMarks, 100);
+  assert.equal(subject.needsReview, false);
 });

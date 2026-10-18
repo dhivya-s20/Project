@@ -33,3 +33,7 @@
 .document-category-field { display:flex; align-items:center; gap:12px; margin:0 0 14px; color:#657264; font-size:11px; font-weight:600; }
 .document-category-field select { min-width:240px; padding:9px 12px; border:1px solid #dfe6dc; border-radius:8px; background:#fff; color:#2a372d; font:inherit; }
 @media(max-width:520px) { .document-category-field { align-items:flex-start; flex-direction:column; gap:6px; }.document-category-field select { width:100%; } }
+.review-preview { display:flex; flex-direction:column; justify-content:center; gap:14px; padding:16px; }
+.review-preview img { display:block; width:100%; height:auto; max-height:520px; object-fit:contain; }
+.preview-confirm { align-self:center; min-width:100px; }
+.preview-error { color:#a55649; font-size:12px; text-align:center; }

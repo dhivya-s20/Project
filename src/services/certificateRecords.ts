@@ -80,13 +80,15 @@ export async function saveCertificate(
 
   const id = await deterministicRecordId(user.id, category, file);
   let saveMode = mode;
+  let existingCompletedRecord = false;
+  let existingRecordFilePath: string | null = null;
   if (mode === "update" && !ACADEMIC_CATEGORIES.has(category)) {
     throw new UploadFlowError("certificate_record", "Only academic certificate records can be corrected here.");
   }
   if (mode === "insert") {
     const { data: existingRecord, error: existingRecordError } = await supabase
       .from(category)
-      .select("id, verification_status")
+      .select("id, verification_status, file_url")
       .eq("id", id)
       .maybeSingle();
     if (existingRecordError) {
@@ -98,7 +100,8 @@ export async function saveCertificate(
         // and atomically replace its subject rows through the correction RPC.
         saveMode = "update";
       } else {
-        return { inserted: false, updated: false, id };
+        existingCompletedRecord = true;
+        existingRecordFilePath = existingRecord.file_url;
       }
     }
   }
@@ -127,6 +130,14 @@ export async function saveCertificate(
     if (uploadError && !(await objectExists())) {
       throw new UploadFlowError("storage_upload", "The private certificate file could not be restored for correction.", uploadError);
     }
+  }
+
+  if (existingCompletedRecord) {
+    if (existingRecordFilePath !== filePath) {
+      throw new UploadFlowError("certificate_record", "The existing certificate record points to a different Storage file.");
+    }
+    onProgress?.("database");
+    return { inserted: false, updated: false, id };
   }
 
   const record: Record<string, unknown> = {
