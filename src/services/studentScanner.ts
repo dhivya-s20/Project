@@ -1,8 +1,8 @@
 import { createWorker } from "tesseract.js";
-import { parseStudentName } from "./academicName";
-import { UploadFlowError } from "./uploadErrors";
+import { parseStudentName } from "./academicName.ts";
+import { UploadFlowError } from "./uploadErrors.ts";
 
-export { calculateAcademicSummary } from "./academicSummary";
+export { calculateAcademicSummary } from "./academicSummary.ts";
 
 export type SubjectResultStatus = "numeric" | "absent" | "grade" | "unreadable";
 
@@ -135,7 +135,7 @@ function subjectNameFromLine(line: string) {
   return name.replace(/[\s:;,.\-]+$/g, "");
 }
 
-function parseSubjectRows(lines: Array<{ text: string; confidence: number }>, ocrConfidence: number): SubjectMark[] {
+export function parseSubjectRows(lines: Array<{ text: string; confidence: number }>, ocrConfidence: number): SubjectMark[] {
   const rows: SubjectMark[] = [];
   for (const entry of lines) {
     const rawLine = entry.text;

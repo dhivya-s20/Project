@@ -5,6 +5,18 @@ import { calculateAcademicSummary, extractStudentDetails, type ExtractedStudent,
 import { UploadFlowError, safeUploadErrorDetails, uploadFailureMessage } from "../services/uploadErrors";
 import "../UploadPage.css";
 
+function needsAcademicReview(student: ExtractedStudent) {
+  const summary = calculateAcademicSummary(student.subjectMarks, student.officialTotalMarks);
+  return !student.studentName.trim()
+    || student.reviewFields.length > 0
+    || student.subjectMarks.some((subject) => subject.needsReview)
+    || summary.totalMarks === null
+    || summary.maximumTotalMarks === null
+    || summary.totalMismatch === true
+    || (summary.percentage !== null && student.officialPercentage !== null && Math.abs(summary.percentage - student.officialPercentage) > 0.05)
+    || (summary.maximumTotalMarks !== null && student.officialMaximumTotalMarks !== null && Math.abs(summary.maximumTotalMarks - student.officialMaximumTotalMarks) > 0.01);
+}
+
 export default function UploadPage() {
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState("");
@@ -16,6 +28,8 @@ export default function UploadPage() {
   const [status, setStatus] = useState("");
   const [documentCategory, setDocumentCategory] = useState<DocumentCategory>(DOCUMENT_CATEGORIES[0][0]);
   const [extraction, setExtraction] = useState<ExtractedStudent | null>(null);
+  const [showReview, setShowReview] = useState(false);
+  const [savedRecordId, setSavedRecordId] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -52,6 +66,9 @@ export default function UploadPage() {
       const nextPreview = URL.createObjectURL(selected);
       setFile(selected);
       setPreview(nextPreview);
+      setExtraction(null);
+      setShowReview(false);
+      setSavedRecordId(null);
       setStatus("");
       setSuccess(false);
     } catch {
@@ -108,18 +125,19 @@ export default function UploadPage() {
     setSuccess(false);
     try {
       const student = await extractStudentDetails(file);
-      if (!student.studentName && !student.registerNumber && !student.dateOfBirth && !student.subjectMarks.length && !student.examYear && student.officialTotalMarks === null) {
-        throw new UploadFlowError("ocr_recognition", "No student details could be recognized in the selected image.");
-      }
-      if (ACADEMIC_CATEGORIES.has(documentCategory)) {
+      const isAcademic = ACADEMIC_CATEGORIES.has(documentCategory);
+      if (isAcademic) {
         setExtraction(student);
-        setStatus("Review the extracted student and subject marks before saving.");
-        return;
+        setShowReview(false);
       }
       setStatus("Uploading the certificate securely…");
       const result = await saveCertificate(file, student, documentCategory);
+      setSavedRecordId(result.id);
       setSuccess(true);
-      setStatus(result.inserted ? "Record Saved Successfully" : "This certificate record was already saved.");
+      const reviewNotice = isAcademic && needsAcademicReview(student)
+        ? " Some extracted fields need review; the uncertain values were flagged in your record."
+        : "";
+      setStatus(result.inserted ? `Record Saved Successfully.${reviewNotice}` : `This certificate record was already saved.${reviewNotice}`);
     } catch (error) {
       if (import.meta.env.DEV) {
         const stage = error instanceof UploadFlowError ? error.stage : "unknown";
@@ -139,15 +157,7 @@ export default function UploadPage() {
   };
 
   const saveReviewedCertificate = async () => {
-    if (!file || !extraction || submissionLock.current) return;
-    if (!extraction.subjectMarks.length) {
-      setStatus("Add the certificate’s subject rows before saving the academic record.");
-      return;
-    }
-    if (!extraction.studentName.trim()) {
-      setStatus("Enter the student’s name from the certificate before saving.");
-      return;
-    }
+    if (!file || !extraction || !savedRecordId || submissionLock.current) return;
     if (extraction.subjectMarks.some((subject) => !subject.subjectName.trim())) {
       setStatus("Enter a subject name or remove the empty subject row before saving.");
       return;
@@ -171,11 +181,13 @@ export default function UploadPage() {
     submissionLock.current = true;
     setBusy(true);
     setSuccess(false);
-    setStatus("Uploading the certificate securely…");
+    setStatus("Saving your reviewed corrections securely…");
     try {
-      const result = await saveCertificate(file, extraction, documentCategory);
+      const result = await saveCertificate(file, extraction, documentCategory, "update");
+      if (result.id !== savedRecordId) throw new UploadFlowError("certificate_record", "Supabase did not confirm the corrected certificate record.");
       setSuccess(true);
-      setStatus(result.inserted ? "Record Saved Successfully" : "This certificate record was already saved.");
+      setShowReview(false);
+      setStatus("Record Saved Successfully. Your reviewed corrections were saved.");
     } catch (error) {
       if (import.meta.env.DEV) {
         const stage = error instanceof UploadFlowError ? error.stage : "unknown";
@@ -257,6 +269,8 @@ export default function UploadPage() {
     setFile(null);
     setPreview("");
     setExtraction(null);
+    setShowReview(false);
+    setSavedRecordId(null);
     setStatus("");
     setSuccess(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -288,9 +302,10 @@ export default function UploadPage() {
             <div className="review-preview">{preview && <img src={preview} alt="Selected student certificate"/>}<span className="image-badge"><FileImage size={14}/> IMAGE PREVIEW</span></div>
             <div className="review-details"><div className="file-summary"><span className="file-icon"><FileCheck2 size={20}/></span><div><strong>{file.name}</strong><small>{(file.size / 1024 / 1024).toFixed(2)} MB · Ready to scan</small></div><button className="icon-action" aria-label="Remove image" onClick={removeFile}><X size={17}/></button></div>
               <div className="review-tip"><Sparkles size={16}/><span><strong>For best results</strong> Use a well-lit photo with all four edges visible.</span></div>
-              {extraction && ACADEMIC_CATEGORIES.has(documentCategory) && <AcademicReview extraction={extraction} onNameChange={updateStudentName} onFieldsChange={updateAcademicFields} onSubjectChange={updateSubject} onAddSubject={addSubject} onRemoveSubject={removeSubject} />}
-              {status && <div className={`scan-status ${success ? "is-success" : busy || extraction ? "is-busy" : "is-error"}`} role={success || extraction ? "status" : "alert"}>{success ? <Check size={17}/> : busy ? <LoaderCircle className="spin-icon" size={17}/> : <CircleAlert size={17}/>}<span>{status}</span></div>}
-              <div className="review-actions"><button className="secondary-action" onClick={removeFile} disabled={busy}><ArrowLeft size={16}/> Choose another</button><button className="primary-action" onClick={() => void (extraction && ACADEMIC_CATEGORIES.has(documentCategory) ? saveReviewedCertificate() : processCertificate())} disabled={busy || success}>{busy ? <><LoaderCircle className="spin-icon" size={17}/> {extraction ? "Saving record…" : "Reading details…"}</> : success ? <><Check size={17}/> Record saved</> : extraction && ACADEMIC_CATEGORIES.has(documentCategory) ? <><Check size={17}/> Save reviewed record</> : <><ScanLine size={17}/> Read certificate<ArrowRight size={16}/></>}</button></div>
+              {extraction && showReview && ACADEMIC_CATEGORIES.has(documentCategory) && <AcademicReview extraction={extraction} onNameChange={updateStudentName} onFieldsChange={updateAcademicFields} onSubjectChange={updateSubject} onAddSubject={addSubject} onRemoveSubject={removeSubject} />}
+              {status && <div className={`scan-status ${success ? "is-success" : busy ? "is-busy" : "is-error"}`} role={success || busy ? "status" : "alert"}>{success ? <Check size={17}/> : busy ? <LoaderCircle className="spin-icon" size={17}/> : <CircleAlert size={17}/>}<span>{status}</span></div>}
+              <div className="review-actions"><button className="secondary-action" onClick={removeFile} disabled={busy}><ArrowLeft size={16}/> Choose another</button><button className="primary-action" onClick={() => void processCertificate()} disabled={busy || success}>{busy ? <><LoaderCircle className="spin-icon" size={17}/> Processing certificate…</> : success ? <><Check size={17}/> Record saved</> : <><ScanLine size={17}/> Upload and save certificate<ArrowRight size={16}/></>}</button></div>
+              {success && savedRecordId && extraction && ACADEMIC_CATEGORIES.has(documentCategory) && needsAcademicReview(extraction) && <div className="review-actions"><button className="secondary-action" onClick={() => setShowReview((open) => !open)}>{showReview ? "Close details" : "Review extracted details"}</button>{showReview && <button className="primary-action" onClick={() => void saveReviewedCertificate()} disabled={busy}>{busy ? <><LoaderCircle className="spin-icon" size={17}/> Saving corrections…</> : "Save corrections"}</button>}</div>}
               {success && <button className="scan-another" onClick={removeFile}>Scan another certificate</button>}
             </div>
           </section>

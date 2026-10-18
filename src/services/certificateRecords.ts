@@ -73,7 +73,12 @@ function subjectNeedsReview(subject: SubjectMark) {
   return subject.needsReview || incompleteResult;
 }
 
-export async function saveCertificate(file: File, student: ExtractedStudent, category: DocumentCategory) {
+export async function saveCertificate(
+  file: File,
+  student: ExtractedStudent,
+  category: DocumentCategory,
+  mode: "insert" | "update" = "insert",
+) {
   const extension = IMAGE_EXTENSIONS[file.type];
   if (!extension) throw new Error("Choose a JPG, PNG, or WEBP image to upload.");
 
@@ -84,15 +89,20 @@ export async function saveCertificate(file: File, student: ExtractedStudent, cat
   if (!user) throw new UploadFlowError("authentication", "No authenticated user was found.");
 
   const id = await deterministicRecordId(user.id, category, file);
-  const { data: existingRecord, error: existingRecordError } = await supabase
-    .from(category)
-    .select("id")
-    .eq("id", id)
-    .maybeSingle();
-  if (existingRecordError) {
-    throw new UploadFlowError("certificate_record", `Could not check for an existing ${category} record.`, existingRecordError);
+  if (mode === "update" && !ACADEMIC_CATEGORIES.has(category)) {
+    throw new UploadFlowError("certificate_record", "Only academic certificate records can be corrected here.");
   }
-  if (existingRecord) return { inserted: false };
+  if (mode === "insert") {
+    const { data: existingRecord, error: existingRecordError } = await supabase
+      .from(category)
+      .select("id")
+      .eq("id", id)
+      .maybeSingle();
+    if (existingRecordError) {
+      throw new UploadFlowError("certificate_record", `Could not check for an existing ${category} record.`, existingRecordError);
+    }
+    if (existingRecord) return { inserted: false, id };
+  }
 
   const filePath = `${user.id}/${category}/${id}.${extension}`;
   const storage = supabase.storage.from("student-certificates");
@@ -104,7 +114,11 @@ export async function saveCertificate(file: File, student: ExtractedStudent, cat
     return data.some((object) => object.name === fileName);
   };
 
-  if (!(await objectExists())) {
+  const uploadedObjectExists = await objectExists();
+  if (mode === "update" && !uploadedObjectExists) {
+    throw new UploadFlowError("storage_upload", "The private certificate file could not be found for correction.");
+  }
+  if (mode === "insert" && !uploadedObjectExists) {
     const { error: uploadError } = await storage.upload(filePath, file, { contentType: file.type, upsert: false });
     if (uploadError && !(await objectExists())) {
       throw new UploadFlowError("storage_upload", "Supabase Storage rejected the certificate upload.", uploadError);
@@ -187,26 +201,26 @@ export async function saveCertificate(file: File, student: ExtractedStudent, cat
       needs_review: subjectNeedsReview(subject),
     }));
 
-    const { data: savedId, error: rpcError } = await supabase.rpc("save_academic_certificate", {
+    const { data: savedId, error: rpcError } = await supabase.rpc(mode === "update" ? "update_academic_certificate" : "save_academic_certificate", {
       p_category: category,
       p_certificate: record,
       p_subject_marks: subjectRows,
     });
     if (rpcError) {
-      if (rpcError.code === "23505") {
+      if (mode === "insert" && rpcError.code === "23505") {
         const { data: retryRecord, error: retryLookupError } = await supabase
           .from(category)
           .select("id")
           .eq("id", id)
           .maybeSingle();
-        if (!retryLookupError && retryRecord) return { inserted: false };
+        if (!retryLookupError && retryRecord) return { inserted: false, id };
       }
       throw new UploadFlowError("certificate_record", `Supabase rejected the atomic save into ${category}.`, rpcError);
     }
     if (savedId !== id) {
       throw new UploadFlowError("certificate_record", `Supabase did not confirm the atomic save into ${category}.`);
     }
-    return { inserted: true };
+    return { inserted: mode === "insert", id };
   }
 
   const { data: insertedRecord, error: insertError } = await supabase
@@ -221,7 +235,7 @@ export async function saveCertificate(file: File, student: ExtractedStudent, cat
         .select("id")
         .eq("id", id)
         .maybeSingle();
-      if (!retryLookupError && retryRecord) return { inserted: false };
+      if (!retryLookupError && retryRecord) return { inserted: false, id };
     }
     throw new UploadFlowError("certificate_record", `Supabase rejected the insert into ${category}.`, insertError);
   }
@@ -229,7 +243,7 @@ export async function saveCertificate(file: File, student: ExtractedStudent, cat
   if (!insertedRecord?.id) {
     throw new UploadFlowError("certificate_record", `Supabase did not confirm the insert into ${category}.`);
   }
-  return { inserted: true };
+  return { inserted: true, id };
 }
 
 async function deterministicRecordId(userId: string, category: DocumentCategory, file: File) {
