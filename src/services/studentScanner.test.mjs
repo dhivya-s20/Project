@@ -16,6 +16,35 @@ test("keeps printed Biology, Botany, and Zoology as distinct subject rows", () =
   assert.equal(subjects[2].maximumMarks, 20);
 });
 
+test("uses explicit OCR column headings to map numbered subjects and their marks", () => {
+  const subjects = parseSubjectRows([
+    { text: "Subject Maximum Marks Marks Obtained", confidence: 98 },
+    { text: "1 Tamil 100 88", confidence: 96 },
+    { text: "2 English 100 90", confidence: 95 },
+  ], 96);
+
+  assert.deepEqual(subjects.map(({ subjectName, marksObtained, maximumMarks, needsReview }) => ({
+    subjectName,
+    marksObtained,
+    maximumMarks,
+    needsReview,
+  })), [
+    { subjectName: "Tamil", marksObtained: 88, maximumMarks: 100, needsReview: false },
+    { subjectName: "English", marksObtained: 90, maximumMarks: 100, needsReview: false },
+  ]);
+});
+
+test("does not guess the obtained/max order when OCR has no column heading", () => {
+  const [subject] = parseSubjectRows([
+    { text: "Tamil 100 88", confidence: 96 },
+  ], 96);
+
+  assert.equal(subject.subjectName, "Tamil");
+  assert.equal(subject.marksObtained, null);
+  assert.equal(subject.maximumMarks, null);
+  assert.equal(subject.needsReview, true);
+});
+
 test("combines printed theory and practical components once and preserves the component values", () => {
   const subjects = parseSubjectRows([
     { text: "Physics Theory Obtained 70 Maximum 80", confidence: 94 },

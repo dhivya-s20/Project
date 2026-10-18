@@ -107,7 +107,7 @@ export function uploadFailureMessage(error: unknown): string {
           return "The selected certificate table is missing a column required by the upload. Ask an administrator to compare its columns with the application schema.";
         }
         if (code === "PGRST202" || code === "42883") {
-          return "The academic certificate save function is not available in Supabase yet. Apply the academic marks migration, then retry the upload.";
+          return "The required academic certificate save function is not available in Supabase yet. Apply the academic marks and correction migrations, then retry the upload.";
         }
         if (["23502", "22P02", "23514", "22007"].includes(code)) {
           return "Supabase rejected an extracted value because it does not match the selected table’s required data format.";

@@ -3,6 +3,7 @@ import { ArrowLeft, ArrowRight, BadgeCheck, Camera, Check, CircleAlert, CloudUpl
 import { ACADEMIC_CATEGORIES, DOCUMENT_CATEGORIES, saveCertificate, type DocumentCategory } from "../services/certificateRecords";
 import { calculateAcademicSummary, extractStudentDetails, type ExtractedStudent, type SubjectMark } from "../services/studentScanner";
 import { UploadFlowError, safeUploadErrorDetails, uploadFailureMessage } from "../services/uploadErrors";
+import { requiresAcademicReviewBeforeSave } from "../services/academicSavePayload";
 import "../UploadPage.css";
 
 function needsAcademicReview(student: ExtractedStudent) {
@@ -128,6 +129,15 @@ export default function UploadPage() {
       const isAcademic = ACADEMIC_CATEGORIES.has(documentCategory);
       if (isAcademic) {
         setExtraction(student);
+        if (requiresAcademicReviewBeforeSave(student)) {
+          setShowReview(true);
+          const reasons = [
+            !student.studentName.trim() || student.studentNameConfidence < 80 ? "student name" : "",
+            student.subjectMarks.length === 0 ? "subject rows" : "",
+          ].filter(Boolean).join(" and ");
+          setStatus(`OCR could not confidently extract the ${reasons}. Review the certificate details before saving.`);
+          return;
+        }
         setShowReview(false);
       }
       setStatus("Uploading the certificate securely…");
@@ -137,7 +147,11 @@ export default function UploadPage() {
       const reviewNotice = isAcademic && needsAcademicReview(student)
         ? " Some extracted fields need review; the uncertain values were flagged in your record."
         : "";
-      setStatus(result.inserted ? `Record Saved Successfully.${reviewNotice}` : `This certificate record was already saved.${reviewNotice}`);
+      setStatus(result.inserted
+        ? `Record Saved Successfully.${reviewNotice}`
+        : result.updated
+          ? `Record Saved Successfully. The existing pending record and subject rows were reconciled.${reviewNotice}`
+          : `This certificate record was already saved.${reviewNotice}`);
     } catch (error) {
       if (import.meta.env.DEV) {
         const stage = error instanceof UploadFlowError ? error.stage : "unknown";
@@ -157,7 +171,15 @@ export default function UploadPage() {
   };
 
   const saveReviewedCertificate = async () => {
-    if (!file || !extraction || !savedRecordId || submissionLock.current) return;
+    if (!file || !extraction || submissionLock.current) return;
+    if (!extraction.studentName.trim()) {
+      setStatus("Enter the student name exactly as printed on the certificate before saving.");
+      return;
+    }
+    if (!extraction.subjectMarks.length) {
+      setStatus("Add at least one subject row from the certificate before saving.");
+      return;
+    }
     if (extraction.subjectMarks.some((subject) => !subject.subjectName.trim())) {
       setStatus("Enter a subject name or remove the empty subject row before saving.");
       return;
@@ -183,11 +205,16 @@ export default function UploadPage() {
     setSuccess(false);
     setStatus("Saving your reviewed corrections securely…");
     try {
-      const result = await saveCertificate(file, extraction, documentCategory, "update");
-      if (result.id !== savedRecordId) throw new UploadFlowError("certificate_record", "Supabase did not confirm the corrected certificate record.");
+      const result = await saveCertificate(file, extraction, documentCategory, savedRecordId ? "update" : "insert");
+      if (savedRecordId && result.id !== savedRecordId) throw new UploadFlowError("certificate_record", "Supabase did not confirm the corrected certificate record.");
+      setSavedRecordId(result.id);
       setSuccess(true);
       setShowReview(false);
-      setStatus("Record Saved Successfully. Your reviewed corrections were saved.");
+      setStatus(result.inserted
+        ? "Record Saved Successfully. Your reviewed certificate details and subject rows were saved."
+        : result.updated
+          ? "Record Saved Successfully. Your reviewed corrections and subject rows were saved."
+          : "This certificate record was already saved.");
     } catch (error) {
       if (import.meta.env.DEV) {
         const stage = error instanceof UploadFlowError ? error.stage : "unknown";
@@ -304,8 +331,9 @@ export default function UploadPage() {
               <div className="review-tip"><Sparkles size={16}/><span><strong>For best results</strong> Use a well-lit photo with all four edges visible.</span></div>
               {extraction && showReview && ACADEMIC_CATEGORIES.has(documentCategory) && <AcademicReview extraction={extraction} onNameChange={updateStudentName} onFieldsChange={updateAcademicFields} onSubjectChange={updateSubject} onAddSubject={addSubject} onRemoveSubject={removeSubject} />}
               {status && <div className={`scan-status ${success ? "is-success" : busy ? "is-busy" : "is-error"}`} role={success || busy ? "status" : "alert"}>{success ? <Check size={17}/> : busy ? <LoaderCircle className="spin-icon" size={17}/> : <CircleAlert size={17}/>}<span>{status}</span></div>}
-              <div className="review-actions"><button className="secondary-action" onClick={removeFile} disabled={busy}><ArrowLeft size={16}/> Choose another</button><button className="primary-action" onClick={() => void processCertificate()} disabled={busy || success}>{busy ? <><LoaderCircle className="spin-icon" size={17}/> Processing certificate…</> : success ? <><Check size={17}/> Record saved</> : <><ScanLine size={17}/> Upload and save certificate<ArrowRight size={16}/></>}</button></div>
-              {success && savedRecordId && extraction && ACADEMIC_CATEGORIES.has(documentCategory) && needsAcademicReview(extraction) && <div className="review-actions"><button className="secondary-action" onClick={() => setShowReview((open) => !open)}>{showReview ? "Close details" : "Review extracted details"}</button>{showReview && <button className="primary-action" onClick={() => void saveReviewedCertificate()} disabled={busy}>{busy ? <><LoaderCircle className="spin-icon" size={17}/> Saving corrections…</> : "Save corrections"}</button>}</div>}
+              <div className="review-actions"><button className="secondary-action" onClick={removeFile} disabled={busy}><ArrowLeft size={16}/> Choose another</button><button className="primary-action" onClick={() => void processCertificate()} disabled={busy || success || showReview}>{busy ? <><LoaderCircle className="spin-icon" size={17}/> Processing certificate…</> : success ? <><Check size={17}/> Record saved</> : <><ScanLine size={16}/> Upload and save certificate<ArrowRight size={16}/></>}</button></div>
+              {success && savedRecordId && extraction && ACADEMIC_CATEGORIES.has(documentCategory) && needsAcademicReview(extraction) && !showReview && <div className="review-actions"><button className="secondary-action" onClick={() => setShowReview(true)}>Review extracted details</button></div>}
+              {extraction && showReview && ACADEMIC_CATEGORIES.has(documentCategory) && <div className="review-actions"><button className="secondary-action" onClick={() => setShowReview(false)} disabled={busy}>Close details</button><button className="primary-action" onClick={() => void saveReviewedCertificate()} disabled={busy}>{busy ? <><LoaderCircle className="spin-icon" size={17}/> Saving details…</> : savedRecordId ? "Save corrections" : "Save reviewed certificate"}</button></div>}
               {success && <button className="scan-another" onClick={removeFile}>Scan another certificate</button>}
             </div>
           </section>

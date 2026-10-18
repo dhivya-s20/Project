@@ -121,6 +121,19 @@ const SKIP_SUBJECT_LINE = /^\s*(?:subjects?|register|registration|roll|candidate
 const SUBJECT_ROW_END = /(?:\d{1,4}(?:\.\d{1,2})?|ABSENT|AB|PASS|FAIL|O|A1|A2|B1|B2|C1|C2|[A-F][+-]?)$/i;
 const NUMERIC_TOKEN = /\d{1,4}(?:\.\d{1,2})?/g;
 
+function detectMarkColumnOrder(lines: Array<{ text: string }>): "obtained_maximum" | "maximum_obtained" | null {
+  for (let index = 0; index < lines.length; index += 1) {
+    const headerText = lines.slice(index, index + 3).map(({ text }) => text).join(" ").toLowerCase();
+    if (!/\b(?:subject|paper)\b/i.test(headerText)) continue;
+    const maximumPosition = headerText.search(/\b(?:maximum|max\.?)\s*(?:marks?)?\b/i);
+    const obtainedPosition = headerText.search(/\b(?:marks?\s+(?:obtained|secured|scored)|(?:obtained|secured|scored)\s+marks?)\b/i);
+    if (maximumPosition >= 0 && obtainedPosition >= 0 && maximumPosition !== obtainedPosition) {
+      return obtainedPosition < maximumPosition ? "obtained_maximum" : "maximum_obtained";
+    }
+  }
+  return null;
+}
+
 function subjectNameFromLine(line: string) {
   const explicit = line.match(/\b(?:theory|practical)\b/i);
   let name = explicit ? line.slice(0, explicit.index) : line;
@@ -132,14 +145,22 @@ function subjectNameFromLine(line: string) {
     .replace(/[:|•▪]+/g, " ")
     .replace(/\b(?:theory|practical)\b/gi, " ")
     .replace(/\b(?:marks?\s*(?:obtained|secured)|obtained|secured|maximum|max\.?)\b[:=-]?/gi, " "));
-  return name.replace(/[\s:;,.\-]+$/g, "");
+  return name.replace(/[\s:;,.-]+$/g, "");
 }
 
 export function parseSubjectRows(lines: Array<{ text: string; confidence: number }>, ocrConfidence: number): SubjectMark[] {
   const rows: SubjectMark[] = [];
+  const markColumnOrder = detectMarkColumnOrder(lines);
   for (const entry of lines) {
     const rawLine = entry.text;
-    const line = cleanText(rawLine.replace(/[\t]+/g, " "));
+    let line = cleanText(rawLine.replace(/[\t]+/g, " "));
+    const serialPrefix = /^\s*\d{1,3}(?:[.)-]\s*|\s+)/;
+    const hasTwoTrailingScores = (line.match(NUMERIC_TOKEN) ?? []).length >= 3;
+    const numberedSubject = /^\s*\d{1,3}[.)-]\s+/.test(line)
+      || (markColumnOrder !== null && hasTwoTrailingScores && /^\s*\d{1,3}\s+[\p{L}]/u.test(line));
+    if (numberedSubject && serialPrefix.test(line)) {
+      line = line.replace(serialPrefix, "");
+    }
     if (line.length < 3 || !SUBJECT_ROW_END.test(line) || SKIP_SUBJECT_LINE.test(line)) continue;
     const subjectName = subjectNameFromLine(line);
     if (!subjectName || !/[\p{L}]/u.test(subjectName) || subjectName.length > 80) continue;
@@ -208,6 +229,14 @@ export function parseSubjectRows(lines: Array<{ text: string; confidence: number
       row.marksObtained = numbers[0];
       row.resultStatus = "numeric";
       row.needsReview = true;
+    } else if (numbers.length === 2 && markColumnOrder) {
+      const obtainedIndex = markColumnOrder === "obtained_maximum" ? 0 : 1;
+      const maximumIndex = obtainedIndex === 0 ? 1 : 0;
+      row.marksObtained = numbers[obtainedIndex];
+      row.maximumMarks = numbers[maximumIndex];
+      row.resultStatus = "numeric";
+      row.needsReview = row.marksObtained > row.maximumMarks || row.confidence < 80;
+      row.rawMarks = "";
     } else if (numbers.length > 1) {
       // Multiple trailing figures have no reliable column order in plain OCR text.
       // Keep the OCR fragment for review and do not guess which figure is obtained/max.
